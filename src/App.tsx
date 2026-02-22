@@ -3,11 +3,14 @@ import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
 
-const ENERGY_PER_CLICK_OHMZ = 1
+// Physics of a mouse click: Work = Force × Distance
+const CLICK_FORCE_N = 0.45      // Newtons — typical mouse button actuation force (~45 gf)
+const CLICK_DISTANCE_M = 0.002  // meters  — typical mouse button travel distance (2 mm)
+const ENERGY_PER_CLICK_J = CLICK_FORCE_N * CLICK_DISTANCE_M  // Joules per click
 
 function App() {
   const [count, setCount] = useState(0)
-  const energyOhmz = count * ENERGY_PER_CLICK_OHMZ
+  const energyMJ = (count * ENERGY_PER_CLICK_J * 1000).toFixed(2)
 
   return (
     <>
@@ -24,7 +27,7 @@ function App() {
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count}
         </button>
-        <p>Energy generated: {energyOhmz} Ohmz</p>
+        <p>Energy generated: {energyMJ} mJ</p>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR
         </p>
