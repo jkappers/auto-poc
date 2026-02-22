@@ -3,8 +3,11 @@ import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
 
+const ENERGY_PER_CLICK_OHMZ = 1
+
 function App() {
   const [count, setCount] = useState(0)
+  const energyOhmz = count * ENERGY_PER_CLICK_OHMZ
 
   return (
     <>
@@ -21,6 +24,7 @@ function App() {
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count}
         </button>
+        <p>Energy generated: {energyOhmz} Ohmz</p>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR
         </p>
