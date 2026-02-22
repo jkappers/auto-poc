@@ -1,0 +1,119 @@
+name: "Agent Feedback: PR Review → Agent Fix"
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  agent-feedback:
+    if: >-
+      github.event.review.state == 'changes_requested' &&
+      contains(github.event.pull_request.labels.*.name, 'agent-pr')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REVIEW_ID: ${{ github.event.review.id }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Check iteration count
+        id: check-iterations
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          ITERATION_COUNT=$(gh pr view "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --comments --json comments \
+            --jq '[.comments[].body | select(contains("🤖 Agent feedback iteration"))] | length')
+          echo "iteration_count=$ITERATION_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Current iteration count: $ITERATION_COUNT"
+          if [ "$ITERATION_COUNT" -ge 2 ]; then
+            echo "max_reached=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" \
+              --repo "${{ github.repository }}" \
+              --body "⚠️ Agent has reached the maximum number of feedback iterations (2). Escalating to a human reviewer."
+          else
+            echo "max_reached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Codespace
+        if: steps.check-iterations.outputs.max_reached == 'false'
+        id: codespace
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          CODESPACE_NAME=$(gh codespace create \
+            --repo "${{ github.repository }}" \
+            --branch "$HEAD_BRANCH" \
+            --devcontainer-path .devcontainer/devcontainer.json \
+            --machine basicLinux32gb \
+            --json --jq '.name')
+          echo "name=$CODESPACE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Codespace to be ready
+        if: steps.check-iterations.outputs.max_reached == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          CODESPACE_NAME="${{ steps.codespace.outputs.name }}"
+          echo "Waiting for Codespace '$CODESPACE_NAME' to become available..."
+          SECONDS=0
+          MAX_WAIT=300
+          while [ $SECONDS -lt $MAX_WAIT ]; do
+            STATE=$(gh codespace list --json name,state \
+              | jq -r --arg name "$CODESPACE_NAME" '.[] | select(.name == $name) | .state')
+            echo "  State: $STATE (${SECONDS}s elapsed)"
+            if [ "$STATE" = "Available" ]; then
+              echo "Codespace is ready."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Codespace did not become available within ${MAX_WAIT}s"
+          exit 1
+
+      - name: Run agent feedback in Codespace
+        if: steps.check-iterations.outputs.max_reached == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          gh codespace ssh \
+            --codespace "${{ steps.codespace.outputs.name }}" \
+            -- "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY GH_TOKEN=$GH_TOKEN scripts/agent-feedback.sh $PR_NUMBER $REVIEW_ID"
+
+      - name: Delete Codespace
+        if: always() && steps.codespace.outputs.name
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh codespace delete \
+            --codespace "${{ steps.codespace.outputs.name }}" \
+            --force || true
+
+      - name: Post iteration status comment
+        if: always() && steps.check-iterations.outputs.max_reached == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          ITERATION=$(( ${{ steps.check-iterations.outputs.iteration_count }} + 1 ))
+          if [ "${{ job.status }}" = "success" ]; then
+            BODY="🤖 Agent feedback iteration ${ITERATION} completed successfully. Changes have been pushed."
+          else
+            BODY="🤖 Agent feedback iteration ${ITERATION} failed. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+          fi
+          gh pr comment "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"

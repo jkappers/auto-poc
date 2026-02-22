@@ -1,0 +1,99 @@
+name: "Agent Run: Issue → Codespace → Agent → PR"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  agent-run:
+    if: github.event.label.name == 'agent-ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Post agent started comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "🤖 Agent started — working on this issue in a Codespace."
+
+      - name: Create Codespace
+        id: codespace
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          CODESPACE_NAME=$(gh codespace create \
+            --repo "${{ github.repository }}" \
+            --branch main \
+            --devcontainer-path .devcontainer/devcontainer.json \
+            --machine basicLinux32gb \
+            --json --jq '.name')
+          echo "name=$CODESPACE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Codespace to be ready
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          CODESPACE_NAME="${{ steps.codespace.outputs.name }}"
+          echo "Waiting for Codespace '$CODESPACE_NAME' to become available..."
+          SECONDS=0
+          MAX_WAIT=300
+          while [ $SECONDS -lt $MAX_WAIT ]; do
+            STATE=$(gh codespace list --json name,state \
+              | jq -r --arg name "$CODESPACE_NAME" '.[] | select(.name == $name) | .state')
+            echo "  State: $STATE (${SECONDS}s elapsed)"
+            if [ "$STATE" = "Available" ]; then
+              echo "Codespace is ready."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Codespace did not become available within ${MAX_WAIT}s"
+          exit 1
+
+      - name: Run agent bootstrap in Codespace
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          gh codespace ssh \
+            --codespace "${{ steps.codespace.outputs.name }}" \
+            -- "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY GH_TOKEN=$GH_TOKEN scripts/agent-bootstrap.sh $ISSUE_NUMBER"
+
+      - name: Delete Codespace
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh codespace delete \
+            --codespace "${{ steps.codespace.outputs.name }}" \
+            --force || true
+
+      - name: Post final status comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            BODY="✅ Agent completed successfully. Check for a new PR."
+          else
+            BODY="❌ Agent failed. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+          fi
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"

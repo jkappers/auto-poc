@@ -1,0 +1,77 @@
+name: "Production Deploy: Deploy to Root on Merge to Main"
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  production-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          VITE_BASE_PATH: "/${{ github.event.repository.name }}/"
+        run: npm run build
+
+      - name: Run post-build script
+        env:
+          VITE_BASE_PATH: "/${{ github.event.repository.name }}/"
+        run: ./scripts/post-build.sh
+
+      - name: Deploy to GitHub Pages (preserve previews)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          DEPLOY_DIR=$(mktemp -d)
+
+          # Clone gh-pages branch if it exists, otherwise create orphan
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            git clone --single-branch --branch gh-pages \
+              "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+              "$DEPLOY_DIR"
+          else
+            cd "$DEPLOY_DIR"
+            git init
+            git checkout --orphan gh-pages
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            cd -
+          fi
+
+          cd "$DEPLOY_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Remove all root-level files/dirs EXCEPT pr-preview/ and .git/
+          find . -maxdepth 1 ! -name 'pr-preview' ! -name '.git' ! -name '.' -exec rm -rf {} +
+
+          # Copy new production build
+          cp -r "$GITHUB_WORKSPACE/dist/"* .
+
+          # Commit and push
+          git add -A
+          git diff --cached --quiet && echo "No changes to deploy." && exit 0
+          git commit -m "deploy: production build from ${{ github.sha }}"
+          git push --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
