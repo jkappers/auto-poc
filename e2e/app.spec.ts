@@ -2,13 +2,11 @@ import { test, expect } from '@playwright/test'
 
 test('homepage has correct heading', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Vite + React' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'auto-poc' })).toBeVisible()
 })
 
-test('counter increments on click', async ({ page }) => {
+test('homepage describes the workflow', async ({ page }) => {
   await page.goto('/')
-  const button = page.getByRole('button', { name: /count is/ })
-  await expect(button).toContainText('count is 0')
-  await button.click()
-  await expect(button).toContainText('count is 1')
+  await expect(page.getByRole('heading', { name: 'How it works' })).toBeVisible()
+  await expect(page.getByText(/agent-ready/)).toBeVisible()
 })
