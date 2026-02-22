@@ -44,7 +44,7 @@ jobs:
             --branch "$HEAD_BRANCH" \
             --devcontainer-path .devcontainer/devcontainer.json \
             --machine basicLinux32gb \
-            --json --jq '.name')
+            --status)
           echo "name=$CODESPACE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Wait for Codespace to be ready
